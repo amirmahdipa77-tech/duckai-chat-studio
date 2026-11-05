@@ -50,13 +50,13 @@ USER_AGENT = (
 
 # model ids accepted by duck.ai -> friendly labels used in the UI
 MODELS = {
-    "gpt-4o-mini": "GPT-6 Luna",
-    "claude-3-haiku-20240307": "Claude Haiku",
-    "meta-llama/Llama-3.3-70B-Instruct-Turbo": "Llama 3.3 70B",
-    "mistralai/Mistral-Small-24B-Instruct-2501": "Mistral Small",
-    "o3-mini": "o3-mini",
+    "gpt-6-luna": "GPT-6 Luna",
+    "gpt-5.4-mini": "GPT-5.4 mini",
+    "gpt-5.4-nano": "GPT-5.4 nano",
+    "claude-haiku-4-5": "Claude Haiku 4.5",
+    "mistral-small-2603": "Mistral Small",
 }
-DEFAULT_MODEL = "gpt-4o-mini"
+DEFAULT_MODEL = "gpt-6-luna"
 
 _opener = urllib.request.build_opener(
     urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
@@ -101,7 +101,14 @@ def new_token(timeout=20):
 def open_chat(model, messages, timeout=180):
     """Handshake step 2: open the streaming chat response."""
     token = new_token()
-    body = json.dumps({"model": model, "messages": messages}, ensure_ascii=False).encode("utf-8")
+    payload = {
+        "model": model,
+        "messages": [{"role": m["role"], "content": [{"type": "text", "text": m["content"]}]} for m in messages],
+        "canUseTools": False,
+        "reasoningEffort": "none",
+        "canShowGreeting": False,
+    }
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         CHAT_URL,
         data=body,

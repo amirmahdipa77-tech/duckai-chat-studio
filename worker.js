@@ -21,14 +21,14 @@
 const DDG = "https://duckduckgo.com";
 const STATUS_URL = DDG + "/duckchat/v1/status";
 const CHAT_URL = DDG + "/duckchat/v1/chat";
-const DEFAULT_MODEL = "gpt-4o-mini";
+const DEFAULT_MODEL = "gpt-6-luna";
 
 const MODELS = new Set([
-  "gpt-4o-mini",
-  "claude-3-haiku-20240307",
-  "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-  "mistralai/Mistral-Small-24B-Instruct-2501",
-  "o3-mini"
+  "gpt-6-luna",
+  "gpt-5.4-mini",
+  "gpt-5.4-nano",
+  "claude-haiku-4-5",
+  "mistral-small-2603"
 ]);
 
 const UA =
@@ -110,7 +110,7 @@ export default {
             Origin: DDG,
             Referer: DDG + "/"
           },
-          body: JSON.stringify({ model, messages })
+          body: JSON.stringify({ model, messages: messages.map(m => ({ role: m.role, content: [{ type: "text", text: m.content }] })), canUseTools: false, reasoningEffort: "none", canShowGreeting: false })
         });
 
         if (!upstream.ok || !upstream.body) {
