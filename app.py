@@ -106,6 +106,8 @@ def open_chat(model, messages, timeout=180):
         "messages": [{"role": m["role"], "content": [{"type": "text", "text": m["content"]}]} for m in messages],
         "canUseTools": False,
         "reasoningEffort": "none",
+        "canUseApproxLocation": None,
+        "canDelegateImageGeneration": None,
         "canShowGreeting": False,
     }
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -220,7 +222,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?")[0]
-        if path != "/api/chat":
+        if path not in ("/api/chat", "/api/duckchat"):
             self._send(404, b"Not found")
             return
 
@@ -230,6 +232,10 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(raw.decode("utf-8"))
         except Exception:
             self._json(400, {"error": "Invalid JSON body."})
+            return
+
+        if path == "/api/duckchat":
+            self._duckchat(payload)
             return
 
         model = payload.get("model") or DEFAULT_MODEL
@@ -298,6 +304,99 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
         self._sse_done()
+
+    # ---------- /api/duckchat (PromptCLI-style contract) ----------
+    def _kind(self, kind, value=None):
+        ev = {"kind": kind}
+        if value is not None:
+            ev["value"] = value
+        self.wfile.write(("data: " + json.dumps(ev, ensure_ascii=False) + "\n\n").encode("utf-8"))
+        self.wfile.flush()
+
+    def _kind_done(self):
+        try:
+            self.wfile.write(("data: " + json.dumps({"kind": "done"}) + "\n\n").encode("utf-8"))
+            self.wfile.flush()
+        except Exception:
+            pass
+
+    def _duckchat(self, payload):
+        """POST /api/duckchat  {prompt, model, history, isDraw}  ->  kind events."""
+        model = payload.get("model") or DEFAULT_MODEL
+        if model not in MODELS:
+            model = DEFAULT_MODEL
+
+        msgs = []
+        history = payload.get("history")
+        if isinstance(history, list):
+            for h in history:
+                if isinstance(h, dict):
+                    role, content = h.get("role"), h.get("content")
+                    if role in ("user", "assistant") and isinstance(content, str) and content.strip():
+                        msgs.append({"role": role, "content": content})
+                elif isinstance(h, str) and h.strip():
+                    msgs.append({"role": "user" if len(msgs) % 2 == 0 else "assistant", "content": h})
+
+        prompt = payload.get("prompt")
+        if isinstance(prompt, str) and prompt.strip():
+            msgs.append({"role": "user", "content": prompt})
+
+        if not msgs:
+            self._json(400, {"error": "prompt is required"})
+            return
+
+        self._sse_start()
+        self._kind("status", "در حال فکر کردن…")
+
+        if DEMO:
+            try:
+                for chunk in DEMO_TEXT.split(" "):
+                    self._kind("message", chunk + " ")
+                    time.sleep(0.02)
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            self._kind_done()
+            return
+
+        try:
+            resp = open_chat(model, msgs)
+        except DuckError as e:
+            self._kind("error", str(e))
+            self._kind_done()
+            return
+
+        try:
+            for raw_line in resp:
+                line = raw_line.decode("utf-8", "replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if not data:
+                    continue
+                if data == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                if "message" in obj:
+                    self._kind("message", obj["message"])
+                elif obj.get("action") == "error":
+                    self._kind("error", "Duck.ai stream error")
+                    break
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except Exception as e:  # noqa: BLE001
+            try:
+                self._kind("error", "stream interrupted: %s" % e)
+            except Exception:
+                pass
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                pass
+        self._kind_done()
 
     # ---------- demo ----------
     def _demo_stream(self):

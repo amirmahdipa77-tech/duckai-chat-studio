@@ -259,6 +259,14 @@ html[data-theme="dark"] .theme-row .switch::after{transform:translateX(-15px)}
 .msg.assistant .content{font-size:14.8px;line-height:1.95;color:var(--text-soft);overflow-wrap:anywhere}
 .msg.assistant .content>*:first-child{margin-top:0}
 .msg.assistant .content>*:last-child{margin-bottom:0}
+.msg-status{
+  display:inline-flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted);
+  margin:2px 0 6px;
+}
+.msg-status::before{
+  content:"";width:7px;height:7px;border-radius:50%;background:var(--accent);
+  animation:pulse 1.1s infinite;
+}
 .msg-actions{display:flex;gap:2px;margin-top:6px;opacity:0;transition:opacity .16s var(--ease)}
 .msg:hover .msg-actions,.msg-actions.show{opacity:1}
 .act{
@@ -578,11 +586,15 @@ html[data-theme="dark"] .theme-row .switch::after{transform:translateX(-15px)}
 
   /* ---------------- models ---------------- */
   const MODELS = [
-    { id: "gpt-6-luna",       label: "GPT-6 Luna",     desc: "سریع و متعادل — پیشنهادی" },
-    { id: "gpt-5.4-mini",     label: "GPT-5.4 mini",   desc: "دقیق و کوتاه" },
-    { id: "gpt-5.4-nano",     label: "GPT-5.4 nano",   desc: "سبک و سریع" },
-    { id: "claude-haiku-4-5", label: "Claude Haiku 4.5", desc: "نوشتار روان" },
-    { id: "mistral-small-2603", label: "Mistral Small", desc: "باز و پرتوان" }
+    { id: "gpt-6-luna",         label: "GPT-6 Luna",       desc: "پرچم‌دار چندوجهی — پیش‌فرض" },
+    { id: "gpt-5.6-luna",       label: "GPT-5.6 Luna",     desc: "استدلال و کدنویسی دقیق" },
+    { id: "gpt-5.4-mini",       label: "GPT-5.4 Mini",     desc: "سریع برای گفتگوی روزمره" },
+    { id: "gpt-5.4-nano",       label: "GPT-5.4 Nano",     desc: "سبک‌ترین و سریع‌ترین" },
+    { id: "claude-haiku-5-5",   label: "Claude Haiku 5.5", desc: "نگارش فارسی روان" },
+    { id: "claude-haiku-4-5",   label: "Claude Haiku 4.5", desc: "کدنویسی دقیق" },
+    { id: "gemma-4-31b",        label: "Gemma 4 31B",      desc: "متن‌باز گوگل — Tinfoil" },
+    { id: "gpt-oss-120b",       label: "GPT-OSS 120B",     desc: "متن‌باز OpenAI — Tinfoil" },
+    { id: "mistral-small-2603", label: "Mistral Small 4",  desc: "اروپایی و پرسرعت" }
   ];
 
   const LS = { chats: "duckai.chats.v1", active: "duckai.active.v1", theme: "duckai.theme.v1", model: "duckai.model.v1" };
@@ -896,7 +908,20 @@ html[data-theme="dark"] .theme-row .switch::after{transform:translateX(-15px)}
   async function probe() {
     setConn("busy", "در حال بررسی…");
     state.transport = "none";
-    // 1) straight from this page: full duck.ai handshake, challenge solved in-page
+    // 1) POST /api/duckchat on this origin (or the relay set in settings)
+    try {
+      const r = await fetch(apiUrl("/api/health"), { cache: "no-store" });
+      const ct = r.headers.get("content-type") || "";
+      if (r.ok && ct.indexOf("json") >= 0) {
+        const j = await r.json();
+        if (j.ok) {
+          state.transport = "endpoint"; state.online = true;
+          setPill("ok", j.demo ? "حالت نمایشی" : "متصل به Duck.ai", "پاسخ‌ها از مسیر /api/duckchat می‌آیند.");
+          return;
+        }
+      }
+    } catch (e) { /* no endpoint here */ }
+    // 2) straight from this page: full duck.ai handshake, challenge solved in-page
     try {
       const st = await duckStatus(undefined);
       if (st.ok && (st.vqd || st.challenge)) {
@@ -905,32 +930,162 @@ html[data-theme="dark"] .theme-row .switch::after{transform:translateX(-15px)}
         return;
       }
     } catch (e) { /* blocked by CORS */ }
-    // 2) a relay server, if one is configured or served from the same origin
-    try {
-      const r = await fetch(apiUrl("/api/health"), { cache: "no-store" });
-      const ct = r.headers.get("content-type") || "";
-      if (r.ok && ct.indexOf("json") >= 0) {
-        const j = await r.json();
-        if (j.ok) {
-          state.transport = "relay"; state.online = true;
-          setPill("ok", j.demo ? "حالت نمایشی" : "متصل به Duck.ai", "پاسخ‌ها از طریق سرور واسط به Duck.ai می‌رود.");
-          return;
-        }
-      }
-    } catch (e) { /* no relay here */ }
     // 3) public CORS-friendly model endpoint, so the page is never dead
     if (fallbackOn()) {
       try {
         const r = await fetch(FALLBACK_PING, { cache: "no-store" });
         if (r.ok) {
           state.transport = "fallback"; state.online = true;
-          setPill("ok", "مسیر پشتیبان", "Duck.ai از مرورگر در دسترس نیست؛ پاسخ‌ها از یک سرویس مدل عمومی گرفته می‌شود.");
+          setPill("ok", "مسیر پشتیبان", "Duck.ai در دسترس نیست؛ پاسخ‌ها از یک سرویس مدل عمومی می‌آید.");
           return;
         }
       } catch (e) { /* offline */ }
     }
     state.online = false;
     setPill("err", "بدون اتصال — تنظیمات", "هیچ مسیری در دسترس نیست.");
+  }
+
+  /* ============ transport 1: POST /api/duckchat ============
+     body: { prompt, model, history, isDraw }
+     events: {"kind":"message","value":"…"} {"kind":"status","value":"…"} {"kind":"done"} */
+  function toHistory(messages) {
+    return messages.slice(0, -1).map(m => ({ role: m.role, content: m.content }));
+  }
+
+  function readKindStream(res, cb) {
+    if (!res.body) throw new Error("پاسخ جریانی دریافت نشد");
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "", done = false;
+    const pump = async () => {
+      while (!done) {
+        const { value, done: d } = await reader.read();
+        if (d) break;
+        buf += dec.decode(value, { stream: true });
+        const parts = buf.split("\n\n");
+        buf = parts.pop();
+        for (const part of parts) {
+          const line = part.split("\n").find(l => l.startsWith("data:"));
+          if (!line) continue;
+          const payload = line.slice(5).trim();
+          if (!payload) continue;
+          if (payload === "[DONE]") { done = true; break; }
+          let ev;
+          try { ev = JSON.parse(payload); } catch (e) { continue; }
+          const kind = ev.kind || (ev.message !== undefined ? "message" : ev.error !== undefined ? "error" : "");
+          const val = ev.value !== undefined ? ev.value : (ev.message !== undefined ? ev.message : ev.error);
+          if (kind === "message" && val != null && String(val) !== "") cb.message(String(val));
+          else if (kind === "status" && val != null) cb.status(String(val));
+          else if (kind === "done") { done = true; break; }
+          else if (kind === "error") throw new Error(String(val || "خطای سرور"));
+        }
+      }
+    };
+    return pump();
+  }
+
+  async function streamEndpoint(messages, model, cb, signal) {
+    const last = messages[messages.length - 1] || { content: "" };
+    const res = await fetch(apiUrl("/api/duckchat"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: String(last.content || ""),
+        model: model,
+        history: toHistory(messages),
+        isDraw: false
+      }),
+      signal
+    });
+    if (!res.ok) throw new Error("endpoint HTTP " + res.status);
+    const ct = res.headers.get("content-type") || "";
+    if (ct.indexOf("event-stream") < 0 && ct.indexOf("json") >= 0) {
+      const j = await res.json().catch(() => null);
+      if (j && j.error) throw new Error(String(j.error));
+      if (j && j.value) { cb.message(String(j.value)); return; }
+    }
+    await readKindStream(res, cb);
+  }
+
+  /* ============ transport 2: duck.ai straight from this page ============ */
+  function b64decodeToText(b64) {
+    const clean = String(b64).replace(/-/g, "+").replace(/_/g, "/").replace(/\s+/g, "");
+    const bin = atob(clean);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new TextDecoder().decode(bytes);
+  }
+
+  function textToB64(text) {
+    const bytes = new TextEncoder().encode(text);
+    let bin = "";
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }
+
+  async function sha256B64(text) {
+    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+    const bytes = new Uint8Array(buf);
+    let bin = "";
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }
+
+  async function solveVqdChallenge(headerValue) {
+    const src = b64decodeToText(headerValue);
+    let out = (0, eval)(src);
+    if (out && typeof out.then === "function") out = await out;
+    if (!out || !Array.isArray(out.client_hashes)) throw new Error("challenge-unsolvable");
+    const client = await Promise.all(out.client_hashes.map(h => sha256B64(String(h))));
+    const payload = Object.assign({}, out);
+    payload.client_hashes = client;
+    payload.meta = Object.assign({}, out.meta || {}, {
+      origin: location.origin,
+      stack: String((new Error()).stack || ""),
+      duration: String(Math.round(performance.now()))
+    });
+    return textToB64(JSON.stringify(payload));
+  }
+
+  async function duckStatus(signal) {
+    const res = await fetch(DDG_STATUS, {
+      headers: { "x-vqd-accept": "1" },
+      cache: "no-store",
+      signal
+    });
+    return { ok: res.ok, vqd: res.headers.get("x-vqd-4"), challenge: res.headers.get("x-vqd-hash-1") };
+  }
+
+  async function duckHandshake(signal) {
+    const st = await duckStatus(signal);
+    if (!st.vqd && !st.challenge) throw new Error("Duck.ai توکنی برنگرداند");
+    let proof = "";
+    if (st.challenge) {
+      try { proof = await solveVqdChallenge(st.challenge); } catch (e) { proof = ""; }
+    }
+    return { vqd: st.vqd, proof: proof };
+  }
+
+  function duckBody(messages, model) {
+    return JSON.stringify({
+      model: model,
+      messages: messages.map(m => ({
+        role: m.role,
+        content: [{ type: "text", text: String(m.content) }]
+      })),
+      canUseTools: false,
+      reasoningEffort: "none",
+      canUseApproxLocation: null,
+      canDelegateImageGeneration: null,
+      canShowGreeting: false
+    });
+  }
+
+  async function duckPost(hs, messages, model, signal) {
+    const headers = { "Content-Type": "application/json", "Accept": "text/event-stream" };
+    if (hs.vqd) headers["x-vqd-4"] = hs.vqd;
+    if (hs.proof) headers["x-vqd-hash-1"] = hs.proof;
+    return fetch(DDG_CHAT, { method: "POST", cache: "no-store", signal, headers, body: duckBody(messages, model) });
   }
 
   function readSSE(res, onChunk) {
@@ -961,121 +1116,20 @@ html[data-theme="dark"] .theme-row .switch::after{transform:translateX(-15px)}
     return pump();
   }
 
-  async function streamRelay(messages, model, onChunk, signal) {
-    const res = await fetch(apiUrl("/api/chat"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model, messages }),
-      signal
-    });
-    if (!res.ok && !res.body) throw new Error("واسط پاسخ نداد (HTTP " + res.status + ")");
-    await readSSE(res, onChunk);
-  }
-
-  /* ---------------- duck.ai: in-page protocol (challenge + SSE) ---------------- */
-  function b64decodeToText(b64) {
-    const clean = String(b64).replace(/-/g, "+").replace(/_/g, "/").replace(/\s+/g, "");
-    const bin = atob(clean);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return new TextDecoder().decode(bytes);
-  }
-
-  function textToB64(text) {
-    const bytes = new TextEncoder().encode(text);
-    let bin = "";
-    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-    return btoa(bin);
-  }
-
-  async function sha256B64(text) {
-    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-    const bytes = new Uint8Array(buf);
-    let bin = "";
-    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-    return btoa(bin);
-  }
-
-  /* /duckchat/v1/status returns an obfuscated IIFE in x-vqd-hash-1.
-     It reads navigator/document/layout, so it only works inside a real page —
-     which is exactly where we are. Result is SHA-256'd per client hash and
-     packed back as base64(JSON). */
-  async function solveVqdChallenge(headerValue) {
-    const src = b64decodeToText(headerValue);
-    let out = (0, eval)(src);
-    if (out && typeof out.then === "function") out = await out;
-    if (!out || !Array.isArray(out.client_hashes)) throw new Error("challenge-unsolvable");
-    const client = await Promise.all(out.client_hashes.map(h => sha256B64(String(h))));
-    const payload = Object.assign({}, out);
-    payload.client_hashes = client;
-    payload.meta = Object.assign({}, out.meta || {}, {
-      origin: location.origin,
-      stack: String((new Error()).stack || ""),
-      duration: String(Math.round(performance.now()))
-    });
-    return textToB64(JSON.stringify(payload));
-  }
-
-  async function duckStatus(signal) {
-    const res = await fetch(DDG_STATUS, {
-      headers: { "x-vqd-accept": "1" },
-      cache: "no-store",
-      signal
-    });
-    const vqd = res.headers.get("x-vqd-4");
-    const challenge = res.headers.get("x-vqd-hash-1");
-    return { ok: res.ok, vqd, challenge };
-  }
-
-  async function duckHandshake(signal) {
-    const st = await duckStatus(signal);
-    if (!st.vqd && !st.challenge) throw new Error("Duck.ai توکنی برنگرداند (CORS یا چالش)");
-    let proof = "";
-    if (st.challenge) {
-      try { proof = await solveVqdChallenge(st.challenge); } catch (e) { proof = ""; }
-    }
-    return { vqd: st.vqd, proof };
-  }
-
-  function duckBody(messages, model) {
-    return JSON.stringify({
-      model: model,
-      messages: messages.map(m => ({
-        role: m.role,
-        content: [{ type: "text", text: String(m.content) }]
-      })),
-      canUseTools: false,
-      reasoningEffort: "none",
-      canUseApproxLocation: null,
-      canDelegateImageGeneration: null,
-      canShowGreeting: false
-    });
-  }
-
-  async function duckPost(hs, messages, model, signal) {
-    const headers = { "Content-Type": "application/json", "Accept": "text/event-stream" };
-    if (hs.vqd) headers["x-vqd-4"] = hs.vqd;
-    if (hs.proof) headers["x-vqd-hash-1"] = hs.proof;
-    return fetch(DDG_CHAT, {
-      method: "POST",
-      cache: "no-store",
-      signal,
-      headers,
-      body: duckBody(messages, model)
-    });
-  }
-
-  async function streamDirect(messages, model, onChunk, signal) {
+  async function streamDirect(messages, model, cb, signal) {
+    cb.status("در حال فکر کردن…");
     let hs = await duckHandshake(signal);
     let res = await duckPost(hs, messages, model, signal);
     if (res.status === 418 || res.status === 403 || res.status === 400) {
-      hs = await duckHandshake(signal);           // fresh challenge, second try
+      cb.status("در حال تازه‌سازی نشست…");
+      hs = await duckHandshake(signal);
       res = await duckPost(hs, messages, model, signal);
     }
     if (!res.ok) throw new Error("Duck.ai پاسخ " + res.status + " داد");
-    await readSSE(res, onChunk);
+    await readSSE(res, t => cb.message(t));
   }
 
+  /* ============ transport 3: public CORS-friendly model endpoint ============ */
   function readOpenAI(res, onChunk) {
     if (!res.body) throw new Error("پاسخ جریانی دریافت نشد");
     const reader = res.body.getReader();
@@ -1100,15 +1154,14 @@ html[data-theme="dark"] .theme-row .switch::after{transform:translateX(-15px)}
           if (delta && typeof delta.content === "string" && delta.content) onChunk(delta.content);
           const msg = obj.choices && obj.choices[0] && obj.choices[0].message;
           if (msg && typeof msg.content === "string" && msg.content) onChunk(msg.content);
-          if (obj.error) throw new Error(typeof obj.error === "string" ? obj.error : "خطای سرویس پشتیبان");
         }
       }
     };
     return pump();
   }
 
-  async function streamFallback(messages, model, onChunk, signal) {
-    // 1) streaming POST (needs a successful CORS preflight)
+  async function streamFallback(messages, model, cb, signal) {
+    cb.status("در حال فکر کردن…");
     try {
       const res = await fetch(FALLBACK_CHAT, {
         method: "POST",
@@ -1123,39 +1176,42 @@ html[data-theme="dark"] .theme-row .switch::after{transform:translateX(-15px)}
       });
       if (!res.ok) throw new Error("fallback " + res.status);
       const ct = res.headers.get("content-type") || "";
-      if (ct.indexOf("event-stream") >= 0) return readOpenAI(res, onChunk);
+      if (ct.indexOf("event-stream") >= 0) return readOpenAI(res, t => cb.message(t));
       const text = await res.text();
       let out = text;
       try {
         const j = JSON.parse(text);
         out = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || j.message || text;
       } catch (e) { /* plain text */ }
-      if (out) onChunk(out);
+      if (out) cb.message(out);
       return;
     } catch (e) {
       if (e && e.name === "AbortError") throw e;
     }
-    // 2) plain GET — a "simple" request, so no preflight and no CORS surprises
     const hist = messages.slice(-6).map(m => (m.role === "user" ? "User: " : "Assistant: ") + m.content).join("\n");
     const prompt = ("به فارسی و کوتاه پاسخ بده.\n" + hist).slice(0, 1600);
-    const res = await fetch("https://text.pollinations.ai/" + encodeURIComponent(prompt) + "?model=openai&referrer=duckai-chat-studio", { signal, cache: "no-store" });
+    const res = await fetch("https://text.pollinations.ai/" + encodeURIComponent(prompt) + "?model=openai&referrer=duckai-chat-studio", { signal: signal, cache: "no-store" });
     if (!res.ok) throw new Error("مسیر پشتیبان پاسخ " + res.status + " داد");
     const out = (await res.text()).trim();
     if (!out) throw new Error("پاسخی از مسیر پشتیبان نرسید");
-    onChunk(out);
+    cb.message(out);
   }
 
-  function runTransport(t, messages, model, onChunk, signal) {
-    if (t === "direct") return streamDirect(messages, model, onChunk, signal);
-    if (t === "fallback") return streamFallback(messages, model, onChunk, signal);
-    return streamRelay(messages, model, onChunk, signal);
+  /* ============ engine chain ============ */
+  function runTransport(t, messages, model, cb, signal) {
+    if (t === "direct") return streamDirect(messages, model, cb, signal);
+    if (t === "fallback") return streamFallback(messages, model, cb, signal);
+    return streamEndpoint(messages, model, cb, signal);
   }
 
-  async function streamReply(messages, model, onChunk, signal) {
+  async function streamReply(messages, model, cb, signal) {
     if (!state.transport || state.transport === "none") await probe();
     const first = state.transport;
     let emitted = false;
-    const wrapped = (t) => { emitted = true; onChunk(t); };
+    const wrapped = {
+      message: (t) => { emitted = true; cb.message(t); },
+      status: (t) => cb.status(t)
+    };
     try {
       return await runTransport(first, messages, model, wrapped, signal);
     } catch (err) {
@@ -1286,16 +1342,33 @@ html[data-theme="dark"] .theme-row .switch::after{transform:translateX(-15px)}
     state.controller = new AbortController();
 
     let acc = "";
+    let statusEl = null;
     const paint = () => {
       node.dataset.raw = acc;
       content.innerHTML = md(acc) + '<span class="caret"></span>';
+    };
+    const setStatus = (t) => {
+      if (!t) return;
+      if (!statusEl) {
+        statusEl = el("div", "msg-status");
+        content.parentNode.insertBefore(statusEl, content);
+      }
+      if (content.querySelector(".dots")) content.innerHTML = "";
+      statusEl.textContent = t;
+    };
+    const cb = {
+      status: setStatus,
+      message: (t) => {
+        if (statusEl) { statusEl.remove(); statusEl = null; }
+        acc += t; paint(); scrollToBottom();
+      }
     };
 
     try {
       await streamReply(
         c.messages.map(m => ({ role: m.role, content: m.content })),
         state.model,
-        (t) => { acc += t; paint(); scrollToBottom(); },
+        cb,
         state.controller.signal
       );
 
@@ -1329,6 +1402,7 @@ html[data-theme="dark"] .theme-row .switch::after{transform:translateX(-15px)}
         if (!aborted) { setConn("err", "خطا در اتصال"); state.online = false; }
       }
     } finally {
+      if (statusEl) { statusEl.remove(); statusEl = null; }
       state.streaming = false;
       state.controller = null;
       dom.stopBtn.hidden = true;
