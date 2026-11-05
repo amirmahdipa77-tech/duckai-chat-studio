@@ -347,6 +347,12 @@ html[data-theme="dark"] .theme-row .switch::after{transform:translateX(-15px)}
 .modal-list{font-size:12.5px;color:var(--text-soft);line-height:2;border-top:1px solid var(--border);padding-top:12px}
 .modal-list ol{margin:6px 0 0;padding-inline-start:20px}
 .modal-list code{font-family:var(--mono);font-size:11.5px;background:var(--code-bg);border:1px solid var(--border);padding:1px 5px;border-radius:5px;direction:ltr;display:inline-block;unicode-bidi:embed}
+.switch-row{display:flex;align-items:flex-start;gap:9px;margin:0 0 16px;font-size:12.5px;color:var(--text-soft);line-height:1.8;cursor:pointer}
+.switch-row input{position:absolute;opacity:0;width:0;height:0}
+.switch-box{flex:0 0 34px;width:34px;height:19px;border-radius:99px;background:var(--border-strong);position:relative;transition:background .16s;margin-top:3px}
+.switch-box::after{content:"";position:absolute;top:2px;right:2px;width:15px;height:15px;border-radius:50%;background:#fff;transition:transform .16s;box-shadow:0 1px 2px rgba(0,0,0,.25)}
+.switch-row input:checked+.switch-box{background:var(--accent)}
+.switch-row input:checked+.switch-box::after{transform:translateX(-15px)}
 .note{flex-wrap:wrap}
 .note-btn{margin-inline-start:auto;white-space:nowrap;font-size:11.5px;padding:4px 10px;border-radius:7px;background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent-ink);font-weight:500}
 
@@ -549,12 +555,17 @@ html[data-theme="dark"] .theme-row .switch::after{transform:translateX(-15px)}
       <button class="btn ghost" id="clearRelay" type="button">پاک کردن</button>
       <button class="btn primary" id="saveRelay" type="button">ذخیره و بررسی</button>
     </div>
+    <label class="switch-row">
+      <input type="checkbox" id="fallbackToggle">
+      <span class="switch-box"></span>
+      <span class="switch-text">اگر Duck.ai در دسترس نبود، از مسیر پشتیبان استفاده شود</span>
+    </label>
     <div class="modal-list">
-      <b>سه راه برای اتصال</b>
+      <b>مسیرهای اتصال (به همین ترتیب امتحان می‌شوند)</b>
       <ol>
-        <li><b>Cloudflare Worker</b> — فایل <code>worker.js</code> همین مخزن را در یک Worker رایگان منتشر کنید و نشانی آن را بالا بگذارید. بدون پایتون.</li>
-        <li><b>اجرای محلی</b> — <code>python3 app.py</code> و باز کردن <code>http://127.0.0.1:8000</code>.</li>
-        <li><b>اتصال مستقیم</b> — اگر DuckDuckGo اجازهٔ CORS بدهد، بدون هیچ واسطی کار می‌کند.</li>
+        <li><b>سرور واسط</b> — <code>app.py</code> روی رایانهٔ خودتان، یا <code>worker.js</code> روی یک Cloudflare Worker رایگان. کامل‌ترین حالت: پاسخ از خود Duck.ai.</li>
+        <li><b>اتصال مستقیم</b> — اگر مرورگر اجازهٔ CORS بدهد، بدون واسط.</li>
+        <li><b>مسیر پشتیبان</b> — یک سرویس مدل عمومی که CORS دارد؛ تا وقتی Duck.ai از مرورگر در دسترس نیست، گفتگو کار می‌کند. متن پیام‌ها در این حالت به همان سرویس می‌رود.</li>
       </ol>
     </div>
   </div>
@@ -872,33 +883,54 @@ html[data-theme="dark"] .theme-row .switch::after{transform:translateX(-15px)}
     dom.conn.querySelector("span").textContent = text;
   }
 
+  const FALLBACK_CHAT = "https://text.pollinations.ai/openai";
+  const FALLBACK_PING = "https://text.pollinations.ai/models";
+  const LS_FALLBACK = "duckai.fallback.v1";
+  function fallbackOn() { return localStorage.getItem(LS_FALLBACK) !== "off"; }
+
+  function setPill(kind, text, title) {
+    setConn(kind, text);
+    dom.conn.title = title || "";
+  }
+
   async function probe() {
     setConn("busy", "در حال بررسی…");
-    state.mode = "none";
-    // 1) relay server: local app.py, or any hosted relay / worker
+    state.transport = "none";
+    // 1) a relay server: local app.py, or any hosted relay / worker
     try {
       const r = await fetch(apiUrl("/api/health"), { cache: "no-store" });
       const ct = r.headers.get("content-type") || "";
       if (r.ok && ct.indexOf("json") >= 0) {
         const j = await r.json();
-        state.mode = "relay";
-        state.online = !!j.ok;
-        if (j.ok) setConn("ok", j.demo ? "حالت نمایشی" : "متصل از طریق واسط");
-        else setConn("err", "واسط بدون دسترسی");
-        return;
+        if (j.ok) {
+          state.transport = "relay"; state.online = true;
+          setPill("ok", j.demo ? "حالت نمایشی" : "متصل به Duck.ai", "پاسخ‌ها از طریق سرور واسط به Duck.ai می‌رود.");
+          return;
+        }
       }
     } catch (e) { /* no relay here */ }
-    // 2) direct from the browser (only if DuckDuckGo sends CORS headers)
+    // 2) straight from the browser (only if DuckDuckGo sends CORS headers)
     try {
       const r = await fetch(DDG_STATUS, { headers: { "x-vqd-accept": "1" }, cache: "no-store" });
       if (r.ok && r.headers.get("x-vqd-4")) {
-        state.mode = "direct"; state.online = true;
-        setConn("ok", "اتصال مستقیم");
+        state.transport = "direct"; state.online = true;
+        setPill("ok", "اتصال مستقیم", "مرورگر مستقیم به Duck.ai وصل است.");
         return;
       }
     } catch (e) { /* blocked by CORS */ }
+    // 3) public CORS-friendly model endpoint, so the page is never dead
+    if (fallbackOn()) {
+      try {
+        const r = await fetch(FALLBACK_PING, { cache: "no-store" });
+        if (r.ok) {
+          state.transport = "fallback"; state.online = true;
+          setPill("ok", "مسیر پشتیبان", "Duck.ai از مرورگر در دسترس نیست؛ پاسخ‌ها از یک سرویس مدل عمومی گرفته می‌شود.");
+          return;
+        }
+      } catch (e) { /* offline */ }
+    }
     state.online = false;
-    setConn("err", "بدون اتصال — تنظیمات");
+    setPill("err", "بدون اتصال — تنظیمات", "هیچ مسیری در دسترس نیست.");
   }
 
   function readSSE(res, onChunk) {
@@ -955,15 +987,113 @@ html[data-theme="dark"] .theme-row .switch::after{transform:translateX(-15px)}
     await readSSE(res, onChunk);
   }
 
-  async function streamReply(messages, model, onChunk, signal) {
-    if (state.mode === "none" || state.mode === "unknown") await probe();
-    if (state.mode === "direct") return streamDirect(messages, model, onChunk, signal);
+  function readOpenAI(res, onChunk) {
+    if (!res.body) throw new Error("پاسخ جریانی دریافت نشد");
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "", done = false;
+    const pump = async () => {
+      while (!done) {
+        const { value, done: d } = await reader.read();
+        if (d) break;
+        buf += dec.decode(value, { stream: true });
+        const parts = buf.split("\n\n");
+        buf = parts.pop();
+        for (const part of parts) {
+          const line = part.split("\n").find(l => l.startsWith("data:"));
+          if (!line) continue;
+          const payload = line.slice(5).trim();
+          if (!payload) continue;
+          if (payload === "[DONE]") { done = true; break; }
+          let obj;
+          try { obj = JSON.parse(payload); } catch (e) { continue; }
+          const delta = obj.choices && obj.choices[0] && obj.choices[0].delta;
+          if (delta && typeof delta.content === "string" && delta.content) onChunk(delta.content);
+          const msg = obj.choices && obj.choices[0] && obj.choices[0].message;
+          if (msg && typeof msg.content === "string" && msg.content) onChunk(msg.content);
+          if (obj.error) throw new Error(typeof obj.error === "string" ? obj.error : "خطای سرویس پشتیبان");
+        }
+      }
+    };
+    return pump();
+  }
+
+  async function streamFallback(messages, model, onChunk, signal) {
+    // 1) streaming POST (needs a successful CORS preflight)
+    try {
+      const res = await fetch(FALLBACK_CHAT, {
+        method: "POST",
+        signal,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "openai",
+          stream: true,
+          referrer: "duckai-chat-studio",
+          messages: messages.map(m => ({ role: m.role, content: m.content }))
+        })
+      });
+      if (!res.ok) throw new Error("fallback " + res.status);
+      const ct = res.headers.get("content-type") || "";
+      if (ct.indexOf("event-stream") >= 0) return readOpenAI(res, onChunk);
+      const text = await res.text();
+      let out = text;
+      try {
+        const j = JSON.parse(text);
+        out = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || j.message || text;
+      } catch (e) { /* plain text */ }
+      if (out) onChunk(out);
+      return;
+    } catch (e) {
+      if (e && e.name === "AbortError") throw e;
+    }
+    // 2) plain GET — a "simple" request, so no preflight and no CORS surprises
+    const hist = messages.slice(-6).map(m => (m.role === "user" ? "User: " : "Assistant: ") + m.content).join("\n");
+    const prompt = ("به فارسی و کوتاه پاسخ بده.\n" + hist).slice(0, 1600);
+    const res = await fetch("https://text.pollinations.ai/" + encodeURIComponent(prompt) + "?model=openai&referrer=duckai-chat-studio", { signal, cache: "no-store" });
+    if (!res.ok) throw new Error("مسیر پشتیبان پاسخ " + res.status + " داد");
+    const out = (await res.text()).trim();
+    if (!out) throw new Error("پاسخی از مسیر پشتیبان نرسید");
+    onChunk(out);
+  }
+
+  function runTransport(t, messages, model, onChunk, signal) {
+    if (t === "direct") return streamDirect(messages, model, onChunk, signal);
+    if (t === "fallback") return streamFallback(messages, model, onChunk, signal);
     return streamRelay(messages, model, onChunk, signal);
+  }
+
+  async function streamReply(messages, model, onChunk, signal) {
+    if (!state.transport || state.transport === "none") await probe();
+    const first = state.transport;
+    let emitted = false;
+    const wrapped = (t) => { emitted = true; onChunk(t); };
+    try {
+      return await runTransport(first, messages, model, wrapped, signal);
+    } catch (err) {
+      if (err && err.name === "AbortError") throw err;
+      if (emitted) throw err;
+      const before = state.transport;
+      await probe();
+      if (state.transport && state.transport !== "none" && state.transport !== before) {
+        return runTransport(state.transport, messages, model, wrapped, signal);
+      }
+      throw err;
+    }
   }
 
   /* ---------------- settings ---------------- */
   const modal = $("#settingsModal"), relayInput = $("#relayInput");
-  function openSettings() { relayInput.value = savedRelay(); modal.hidden = false; relayInput.focus(); }
+  const fallbackToggle = $("#fallbackToggle");
+  function openSettings() {
+    relayInput.value = savedRelay();
+    fallbackToggle.checked = fallbackOn();
+    modal.hidden = false;
+    relayInput.focus();
+  }
+  fallbackToggle.addEventListener("change", async () => {
+    localStorage.setItem(LS_FALLBACK, fallbackToggle.checked ? "on" : "off");
+    await probe();
+  });
   function closeSettings() { modal.hidden = true; }
   $("#settingsBtn").addEventListener("click", openSettings);
   $("#closeSettings").addEventListener("click", closeSettings);
@@ -1041,8 +1171,7 @@ html[data-theme="dark"] .theme-row .switch::after{transform:translateX(-15px)}
     state.streaming = false;
     dom.stopBtn.hidden = true;
     dom.sendBtn.disabled = !dom.input.value.trim();
-    if (state.online) setConn("ok", state.mode === "direct" ? "اتصال مستقیم" : "متصل از طریق واسط");
-    else setConn("err", "بدون اتصال — تنظیمات");
+    if (state.online) probe(); else setPill("err", "بدون اتصال — تنظیمات", "");
   }
 
   async function send(text) {
@@ -1092,7 +1221,7 @@ html[data-theme="dark"] .theme-row .switch::after{transform:translateX(-15px)}
       content.innerHTML = md(acc);
       actions.classList.add("show");
       state.online = true;
-      setConn("ok", state.mode === "direct" ? "اتصال مستقیم" : "متصل از طریق واسط");
+      setPill("ok", state.transport === "direct" ? "اتصال مستقیم" : state.transport === "fallback" ? "مسیر پشتیبان" : "متصل به Duck.ai", dom.conn.title);
     } catch (err) {
       const aborted = err && (err.name === "AbortError");
       if (acc.trim()) {
@@ -1103,8 +1232,8 @@ html[data-theme="dark"] .theme-row .switch::after{transform:translateX(-15px)}
         actions.classList.add("show");
       } else {
         const msg = aborted ? "تولید پاسخ متوقف شد."
-          : state.mode === "none"
-            ? "این صفحه استاتیک است و به Duck.ai دسترسی مستقیم ندارد (CORS). برای گفتگوی واقعی، نشانی یک سرور واسط را در تنظیمات بگذارید — مثلاً فایل worker.js روی Cloudflare Worker، یا app.py روی رایانهٔ خودتان."
+          : state.transport === "none"
+            ? "هیچ مسیری برای پاسخ پیدا نشد. یک بار صفحه را دوباره بارگذاری کنید؛ اگر باز هم نشد، در تنظیمات نشانی سرور واسط را بگذارید."
             : "اتصال برقرار نشد: " + esc(err && err.message ? err.message : "خطای نامشخص");
         content.innerHTML = '<div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.01"/></svg><span>' + msg + '</span>' +
           (aborted ? "" : '<button class="note-btn" type="button" data-open-settings>تنظیمات اتصال</button>') + '</div>';
